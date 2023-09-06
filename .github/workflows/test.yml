@@ -37,12 +37,7 @@ jobs:
           profile: minimal
           components: rustfmt, clippy
 
-      - uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-build-${{ hashFiles('**/Cargo.lock') }}-${{ env.RUST_STABLE}}
+      - uses: Swatinem/rust-cache@v2
 
       - name: cargo fmt
         uses: actions-rs/cargo@v1
