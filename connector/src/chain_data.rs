@@ -35,9 +35,6 @@ impl AccountData {
 }
 
 /// Track slots and account writes
-///
-/// - use account() to retrieve the current best data for an account.
-/// - update_from_snapshot() and update_from_websocket() update the state for new messages
 pub struct ChainData {
     /// only slots >= newest_rooted_slot are retained
     slots: HashMap<u64, SlotData>,

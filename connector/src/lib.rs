@@ -4,6 +4,9 @@ pub mod grpc_plugin_source;
 pub mod metrics;
 pub mod snapshot;
 pub mod websocket_source;
+pub mod account_fetcher_trait;
+pub mod account_fetcher;
+pub mod chain_data_fetcher;
 
 use itertools::Itertools;
 use std::str::FromStr;
