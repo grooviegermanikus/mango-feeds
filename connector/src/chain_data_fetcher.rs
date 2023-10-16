@@ -39,7 +39,42 @@ pub struct ChainDataFetcher {
     pub rpc: RpcClientAsync,
 }
 
+#[async_trait::async_trait]
+impl AccountFetcher for ChainDataFetcher {
+
+    async fn fetch_raw_account(
+        &self,
+        address: &Pubkey,
+    ) -> anyhow::Result<solana_sdk::account::AccountSharedData> {
+        let result = self.fetch_raw_account_sync(address);
+        return result;
+    }
+
+    async fn fetch_raw_account_lookup_table(
+        &self,
+        address: &Pubkey,
+    ) -> anyhow::Result<AccountSharedData> {
+        // Fetch data via RPC if missing: the chain data updater doesn't know about all the
+        // lookup talbes we may need.
+        if let Ok(alt) = self.fetch_raw_account_sync(address) {
+            return Ok(alt);
+        }
+        self.refresh_account_via_rpc(address).await?;
+        self.fetch_raw_account_sync(address)
+    }
+
+    async fn fetch_program_accounts(
+        &self,
+        program: &Pubkey,
+        discriminator: [u8; 8],
+    ) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
+        self.fetch_program_accounts_sync(program, discriminator)
+    }
+
+}
+
 impl AccountFetcherSync for ChainDataFetcher {
+    // renamed from fetch_raw
     fn fetch_raw_account_sync(&self, address: &Pubkey) -> anyhow::Result<AccountSharedData> {
         let chain_data = self.chain_data.read().unwrap();
         Ok(chain_data
@@ -47,13 +82,54 @@ impl AccountFetcherSync for ChainDataFetcher {
             .map(|d| d.account.clone())
             .with_context(|| format!("fetch account {} via chain_data ({} elements)", address, chain_data.accounts_count()))?)
     }
+
+
+    // TODO remove this duplication
+    fn fetch_program_accounts_sync(
+        &self,
+        program: &Pubkey,
+        discriminator: [u8; 8],
+    ) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
+        let chain_data = self.chain_data.read().unwrap();
+        Ok(chain_data
+            .iter_accounts()
+            .filter_map(|(pk, data)| {
+                if data.account.owner() != program {
+                    return None;
+                }
+                let acc_data = data.account.data();
+                if acc_data.len() < 8 || acc_data[..8] != discriminator {
+                    return None;
+                }
+                Some((*pk, data.account.clone()))
+            })
+            .collect::<Vec<_>>())
+    }
 }
+
 
 impl ChainDataFetcher {
 
-    // fn fetch is gone because it used the .load() (ZeroCopy) -> use fetch_raw_account_sync instead
+    // note: Generic methods cannot be used in a trait because it is not "object safe"
+    // note: cannot be in connector because .load depends on ZeroCopy
+    // pub fn fetch<T: anchor_lang::ZeroCopy + anchor_lang::Owner>(
+    //     &self,
+    //     address: &Pubkey,
+    // ) -> anyhow::Result<T> {
+    //     Ok(*self
+    //         .fetch_raw_account_sync(address)?
+    //         .load::<T>()
+    //         .with_context(|| format!("loading account {}", address))?)
+    // }
 
-    // fn fetch_fresh is gone because it depended on ZeroCopy -> moved to MangoChainDataFetcher in mango-client
+    // fetches via RPC, stores in ChainData, returns new version
+    // pub async fn fetch_fresh<T: anchor_lang::ZeroCopy + anchor_lang::Owner>(
+    //     &self,
+    //     address: &Pubkey,
+    // ) -> anyhow::Result<T> {
+    //     self.refresh_account_via_rpc(address).await?;
+    //     self.fetch(address)
+    // }
 
     pub async fn refresh_account_via_rpc(&self, address: &Pubkey) -> anyhow::Result<Slot> {
         let response = self
@@ -93,15 +169,15 @@ impl ChainDataFetcher {
         Ok(slot)
     }
 
-    /// Return the maximum slot reported for the processing of the signatures
-    pub async fn transaction_max_slot(&self, signatures: &[Signature]) -> anyhow::Result<Slot> {
-        let statuses = self.rpc.get_signature_statuses(signatures).await?.value;
-        Ok(statuses
-            .iter()
-            .map(|status_opt| status_opt.as_ref().map(|status| status.slot).unwrap_or(0))
-            .max()
-            .unwrap_or(0))
-    }
+    // /// Return the maximum slot reported for the processing of the signatures
+    // pub async fn transaction_max_slot(&self, signatures: &[Signature]) -> anyhow::Result<Slot> {
+    //     let statuses = self.rpc.get_signature_statuses(signatures).await?.value;
+    //     Ok(statuses
+    //         .iter()
+    //         .map(|status_opt| status_opt.as_ref().map(|status| status.slot).unwrap_or(0))
+    //         .max()
+    //         .unwrap_or(0))
+    // }
 
     /// Return success once all addresses have data >= min_slot
     pub async fn refresh_accounts_via_rpc_until_slot(
@@ -130,48 +206,3 @@ impl ChainDataFetcher {
         Ok(())
     }
 }
-
-#[async_trait::async_trait]
-impl AccountFetcher for ChainDataFetcher {
-    async fn fetch_raw_account(
-        &self,
-        address: &Pubkey,
-    ) -> anyhow::Result<solana_sdk::account::AccountSharedData> {
-        self.fetch_raw_account_sync(address)
-    }
-
-    async fn fetch_raw_account_lookup_table(
-        &self,
-        address: &Pubkey,
-    ) -> anyhow::Result<AccountSharedData> {
-        // Fetch data via RPC if missing: the chain data updater doesn't know about all the
-        // lookup talbes we may need.
-        if let Ok(alt) = self.fetch_raw_account_sync(address) {
-            return Ok(alt);
-        }
-        self.refresh_account_via_rpc(address).await?;
-        self.fetch_raw_account_sync(address)
-    }
-
-    async fn fetch_program_accounts(
-        &self,
-        program: &Pubkey,
-        discriminator: [u8; 8],
-    ) -> anyhow::Result<Vec<(Pubkey, AccountSharedData)>> {
-        let chain_data = self.chain_data.read().unwrap();
-        Ok(chain_data
-            .iter_accounts()
-            .filter_map(|(pk, data)| {
-                if data.account.owner() != program {
-                    return None;
-                }
-                let acc_data = data.account.data();
-                if acc_data.len() < 8 || acc_data[..8] != discriminator {
-                    return None;
-                }
-                Some((*pk, data.account.clone()))
-            })
-            .collect::<Vec<_>>())
-    }
-}
-
